@@ -5,8 +5,8 @@
 
 ```bash
 # Run
-g++ -std=c++17 -O3 -Wall -Werror -Wextra buzzdb.cpp
-./a.out
+rm -rf buzzdbLSM.dat && g++ -std=c++17 -O3 -Wall -Werror -Wextra buzzdbLSM.cpp redBlackTree.cpp -o buzzdbLSM
+./buzzdbLSM
 
 # Display the database file
-strings buzzdb.dat | grep -o '2 0 4 [0-9]* 0 4 [0-9]*' | sed -E 's/2 0 4 ([0-9]+) 0 4 ([0-9]+)/\1 \2/'
+strings buzzdbLSM.dat | grep -o '2 0 4 [0-9]* 0 4 [0-9]*' | sed -E 's/2 0 4 ([0-9]+) 0 4 ([0-9]+)/\1 \2/'

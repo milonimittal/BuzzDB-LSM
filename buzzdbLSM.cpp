@@ -19,6 +19,8 @@
 #include <regex>
 #include <stdexcept>
 
+#include "redBlackTree.h"
+
 enum FieldType { INT, FLOAT, STRING };
 
 // Define a basic Field variant class that can hold different types
@@ -322,7 +324,7 @@ public:
     }
 };
 
-const std::string database_filename = "buzzdb.dat";
+const std::string database_filename = "buzzdbLSM.dat";
 
 class StorageManager {
 public:    
@@ -1284,9 +1286,10 @@ class InsertOperator : public Operator {
 private:
     BufferManager& bufferManager;
     std::unique_ptr<Tuple> tupleToInsert;
+    RedBlackTree& redBlackTree;
 
 public:
-    InsertOperator(BufferManager& manager) : bufferManager(manager) {}
+    InsertOperator(BufferManager& manager, RedBlackTree& redBlackTree) : bufferManager(manager), redBlackTree(redBlackTree){}
 
     // Set the tuple to be inserted by this operator.
     void setTupleToInsert(std::unique_ptr<Tuple> tuple) {
@@ -1303,6 +1306,7 @@ public:
         for (size_t pageId = 0; pageId < bufferManager.getNumPages(); ++pageId) {
             auto& page = bufferManager.getPage(pageId);
             // Attempt to insert the tuple
+            redBlackTree.insert(tupleToInsert->fields[0]->asInt(), tupleToInsert->fields[1]->asInt());
             if (page->addTuple(tupleToInsert->clone())) { 
                 // Flush the page to disk after insertion
                 bufferManager.flushPage(pageId); 
@@ -1370,6 +1374,7 @@ class BuzzDB {
 public:
     HashIndex hash_index;
     BufferManager buffer_manager;
+    RedBlackTree redBlackTree;
 
 public:
     size_t max_number_of_tuples = 5000;
@@ -1397,7 +1402,7 @@ public:
         // newTuple->addField(std::move(float_field));
         // newTuple->addField(std::move(string_field));
 
-        InsertOperator insertOp(buffer_manager);
+        InsertOperator insertOp(buffer_manager, redBlackTree);
         insertOp.setTupleToInsert(std::move(newTuple));
         bool status = insertOp.next();
 
@@ -1449,6 +1454,9 @@ int main() {
         // }
     }
 
+    std::cout<<"Red Black Tree:"<<std::endl;
+    db.redBlackTree.printInorder();
+
     auto start = std::chrono::high_resolution_clock::now();
 
     db.executeQueries();
@@ -1461,6 +1469,6 @@ int main() {
     std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
           << " microseconds" << std::endl;
 
-    
+
     return 0;
 }
