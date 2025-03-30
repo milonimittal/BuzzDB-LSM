@@ -328,6 +328,7 @@ class StorageManager {
 public:    
     std::fstream fileStream;
     size_t num_pages = 0;
+    int current_page_id = -1;
 
 public:
     StorageManager(){
@@ -397,6 +398,7 @@ public:
 
         // Update number of pages
         num_pages += 1;
+        current_page_id += 1;
     }
 
 };
@@ -518,6 +520,16 @@ public:
     
     size_t getNumPages(){
         return storage_manager.num_pages;
+    }
+
+    int getCurrentPageId(){
+        return storage_manager.current_page_id;
+    }
+
+    void readPage(int page_id) {
+        auto page = storage_manager.load(page_id);
+        std::cout << "Contents of Page "<<page_id<<":"<< std::endl;
+        page->print();
     }
 
 };
@@ -1418,7 +1430,6 @@ class RedBlackTree {
         void inorder(Node* node, std::vector<std::unique_ptr<Tuple>>* inorderList) {
             if (node != NIL) {
                 inorder(node->left, inorderList);
-                std::cout << node->key << std::endl;
                 inorderList->push_back(std::move(node->tuple));
                 inorder(node->right, inorderList);
             }
@@ -1453,7 +1464,7 @@ class RedBlackTree {
             numNodes++;
         }
 
-        std::vector<std::unique_ptr<Tuple>> printInorder() { 
+        std::vector<std::unique_ptr<Tuple>> getInorder() { 
             std::vector<std::unique_ptr<Tuple>> inorderList;
             inorder(root, &inorderList); 
             return inorderList;
@@ -1486,19 +1497,21 @@ public:
 
     bool next() override {
         if (!tupleToInsert) return false; // No tuple to insert
-        for (size_t pageId = 0; pageId < bufferManager.getNumPages(); ++pageId) {
-            redBlackTree.insert(tupleToInsert->fields[0]->asInt(), std::move(tupleToInsert));
-            if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
-                std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.printInorder();
-                auto& page = bufferManager.getPage(pageId);
-                for(int i = 0; i < redBlackTree.MAX_NODES;i++){
-                    page->addTuple(inorder[i]->clone());
-                }
-                bufferManager.flushPage(pageId);
-                redBlackTree.clearTree();
+        int pageId = bufferManager.getCurrentPageId();
+        std::cout<<"Current page id in slot manager: "<<pageId<<std::endl;
+        redBlackTree.insert(tupleToInsert->fields[0]->asInt(), std::move(tupleToInsert));
+        if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
+            std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
+            auto& page = bufferManager.getPage(pageId);
+            for(int i = 0; i < redBlackTree.MAX_NODES;i++){
+                page->addTuple(inorder[i]->clone());
             }
-            return true;
+            bufferManager.flushPage(pageId);
+            bufferManager.extend();
+            redBlackTree.clearTree();
+            bufferManager.readPage(pageId);
         }
+        return true;
         // If insertion failed in all existing pages, extend the database and try again
         // bufferManager.extend();
         // auto& newPage = bufferManager.getPage(bufferManager.getNumPages() - 1);
@@ -1507,7 +1520,7 @@ public:
         //     return true; // Insertion successful after extending the database
         // }
 
-        return false; // Insertion failed even after extending the database
+        // return false; // Insertion failed even after extending the database
     }
 
     void close() override {
@@ -1631,6 +1644,7 @@ int main() {
 
     int field1, field2;
     while (inputFile >> field1 >> field2) {
+        std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
         db.insert(field1, field2);
     }
 
