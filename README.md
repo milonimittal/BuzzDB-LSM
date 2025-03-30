@@ -5,7 +5,7 @@
 
 ```bash
 # Run
-rm -rf buzzdbLSM.dat && g++ -std=c++17 -O3 -Wall -Werror -Wextra buzzdbLSM.cpp redBlackTree.cpp -o buzzdbLSM
+rm -rf buzzdbLSM.dat && g++ -std=c++17 -O3 -Wall -Werror -Wextra buzzdbLSM.cpp -o buzzdbLSM
 ./buzzdbLSM
 
 # Display the database file

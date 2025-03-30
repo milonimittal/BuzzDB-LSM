@@ -19,8 +19,6 @@
 #include <regex>
 #include <stdexcept>
 
-#include "redBlackTree.h"
-
 enum FieldType { INT, FLOAT, STRING };
 
 // Define a basic Field variant class that can hold different types
@@ -1282,6 +1280,192 @@ void executeQuery(const QueryComponents& components,
     rootOp->close();
 }
 
+enum Colour {
+    RED,
+    BLACK
+};
+
+struct Node {
+    int key;
+    std::unique_ptr<Tuple> tuple;
+    Colour colour;
+    Node *left, *right, *parent;
+
+    Node(int key, std::unique_ptr<Tuple> tuple): key(key), tuple(std::move(tuple)), colour(RED), left(nullptr), right(nullptr), parent(nullptr){}
+};
+
+class RedBlackTree {
+    private:
+        Node* root;
+        Node* NIL;
+
+        void bstInsert(Node* newNode) {
+            Node* parent = nullptr;
+            Node* current = root;
+            while (current != NIL) {
+                parent = current;
+                if (newNode->key < current->key) {
+                    current = current->left;
+                }
+                else {
+                    current = current->right;
+                }
+            }
+
+            newNode->parent = parent;
+            if (parent == nullptr) {
+                root = newNode;
+            }
+            else if (newNode->key < parent->key) {
+                parent->left = newNode;
+            }
+            else {
+                parent->right = newNode;
+            }
+
+            if (newNode->parent == nullptr) {
+                newNode->colour = BLACK;
+                return;
+            }
+
+            if (newNode->parent->parent == nullptr) {
+                return;
+            }
+        }
+
+        void leftRotate(Node* x){
+            Node* y = x->right;
+            x->right = y->left;
+            if (y->left != NIL) {
+                y->left->parent = x;
+            }
+            y->parent = x->parent;
+            if (x->parent == nullptr) {
+                root = y;
+            }
+            else if (x == x->parent->left) {
+                x->parent->left = y;
+            }
+            else {
+                x->parent->right = y;
+            }
+            y->left = x;
+            x->parent = y;
+        }
+
+        void rightRotate(Node* x) {
+            Node* y = x->left;
+            x->left = y->right;
+            if (y->right != NIL) {
+                y->right->parent = x;
+            }
+            y->parent = x->parent;
+            if (x->parent == nullptr) {
+                root = y;
+            }
+            else if (x == x->parent->right) {
+                x->parent->right = y;
+            }
+            else {
+                x->parent->left = y;
+            }
+            y->right = x;
+            x->parent = y;
+        }
+
+        void fixTree(Node* k) {
+            while (k != root && k->parent->colour == RED) {
+                if (k->parent == k->parent->parent->left) {
+                    Node* u = k->parent->parent->right;
+                    if (u->colour == RED) {
+                        k->parent->colour = BLACK;
+                        u->colour = BLACK;
+                        k->parent->parent->colour = RED;
+                        k = k->parent->parent;
+                    }
+                    else {
+                        if (k == k->parent->right) {
+                            k = k->parent;
+                            leftRotate(k);
+                        }
+                        k->parent->colour = BLACK;
+                        k->parent->parent->colour = RED;
+                        rightRotate(k->parent->parent);
+                    }
+                }
+                else {
+                    Node* u = k->parent->parent->left;
+                    if (u->colour == RED) {
+                        k->parent->colour = BLACK;
+                        u->colour = BLACK;
+                        k->parent->parent->colour = RED;
+                        k = k->parent->parent;
+                    }
+                    else {
+                        if (k == k->parent->left) {
+                            k = k->parent;
+                            rightRotate(k);
+                        }
+                        k->parent->colour = BLACK;
+                        k->parent->parent->colour = RED;
+                        leftRotate(k->parent->parent);
+                    }
+                }
+            }
+            root->colour = BLACK;
+        }
+
+        void inorder(Node* node, std::vector<std::unique_ptr<Tuple>>* inorderList) {
+            if (node != NIL) {
+                inorder(node->left, inorderList);
+                std::cout << node->key << std::endl;
+                inorderList->push_back(std::move(node->tuple));
+                inorder(node->right, inorderList);
+            }
+        }
+
+        void clearNode(Node* node) {
+            if (node != NIL) {
+                clearNode(node->left);
+                clearNode(node->right);
+                delete node;
+            }
+        }
+
+    public:
+        const int MAX_NODES = 3;
+        int numNodes;
+        RedBlackTree() {
+            NIL = new Node(0, 0);
+            NIL->colour = BLACK;
+            NIL->left = NIL->right = NIL;
+            root = NIL;
+            numNodes = 0;
+        }
+
+        void insert(int key, std::unique_ptr<Tuple> tuple) {
+            Node* newNode = new Node(key, std::move(tuple));
+            newNode->left = NIL;
+            newNode->right = NIL;
+        
+            bstInsert(newNode);
+            fixTree(newNode);
+            numNodes++;
+        }
+
+        std::vector<std::unique_ptr<Tuple>> printInorder() { 
+            std::vector<std::unique_ptr<Tuple>> inorderList;
+            inorder(root, &inorderList); 
+            return inorderList;
+        }
+
+        void clearTree() {
+            clearNode(root);
+            root = NIL;
+            numNodes = 0;
+        }
+};
+
 class InsertOperator : public Operator {
 private:
     BufferManager& bufferManager;
@@ -1302,25 +1486,26 @@ public:
 
     bool next() override {
         if (!tupleToInsert) return false; // No tuple to insert
-
         for (size_t pageId = 0; pageId < bufferManager.getNumPages(); ++pageId) {
-            auto& page = bufferManager.getPage(pageId);
-            // Attempt to insert the tuple
-            redBlackTree.insert(tupleToInsert->fields[0]->asInt(), tupleToInsert->fields[1]->asInt());
-            if (page->addTuple(tupleToInsert->clone())) { 
-                // Flush the page to disk after insertion
-                bufferManager.flushPage(pageId); 
-                return true; // Insertion successful
+            redBlackTree.insert(tupleToInsert->fields[0]->asInt(), std::move(tupleToInsert));
+            if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
+                std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.printInorder();
+                auto& page = bufferManager.getPage(pageId);
+                for(int i = 0; i < redBlackTree.MAX_NODES;i++){
+                    page->addTuple(inorder[i]->clone());
+                }
+                bufferManager.flushPage(pageId);
+                redBlackTree.clearTree();
             }
+            return true;
         }
-
         // If insertion failed in all existing pages, extend the database and try again
-        bufferManager.extend();
-        auto& newPage = bufferManager.getPage(bufferManager.getNumPages() - 1);
-        if (newPage->addTuple(tupleToInsert->clone())) {
-            bufferManager.flushPage(bufferManager.getNumPages() - 1);
-            return true; // Insertion successful after extending the database
-        }
+        // bufferManager.extend();
+        // auto& newPage = bufferManager.getPage(bufferManager.getNumPages() - 1);
+        // if (newPage->addTuple(tupleToInsert->clone())) {
+        //     bufferManager.flushPage(bufferManager.getNumPages() - 1);
+        //     return true; // Insertion successful after extending the database
+        // }
 
         return false; // Insertion failed even after extending the database
     }
@@ -1399,8 +1584,6 @@ public:
 
         newTuple->addField(std::move(key_field));
         newTuple->addField(std::move(value_field));
-        // newTuple->addField(std::move(float_field));
-        // newTuple->addField(std::move(string_field));
 
         InsertOperator insertOp(buffer_manager, redBlackTree);
         insertOp.setTupleToInsert(std::move(newTuple));
@@ -1447,15 +1630,9 @@ int main() {
     }
 
     int field1, field2;
-    // int i = 0;
     while (inputFile >> field1 >> field2) {
-        // if(i++ % 10000 == 0){
         db.insert(field1, field2);
-        // }
     }
-
-    std::cout<<"Red Black Tree:"<<std::endl;
-    db.redBlackTree.printInorder();
 
     auto start = std::chrono::high_resolution_clock::now();
 
