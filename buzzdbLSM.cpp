@@ -4,7 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
-
+#include <cassert>
 #include <list>
 #include <unordered_map>
 #include <iostream>
@@ -18,6 +18,7 @@
 #include <optional>
 #include <regex>
 #include <stdexcept>
+#include <cstring>
 
 enum FieldType { INT, FLOAT, STRING };
 
@@ -232,7 +233,7 @@ public:
         auto serializedTuple = tuple->serialize();
         size_t tuple_size = serializedTuple.size();
 
-        //std::cout << "Tuple size: " << tuple_size << " bytes\n";
+        std::cout << "Tuple size: " << tuple_size << " bytes\n";
         assert(tuple_size == 16);
 
         // Check for first slot with enough space
@@ -770,7 +771,7 @@ public:
 
     struct Operand {
         std::unique_ptr<Field> directValue;
-        size_t index;
+        size_t index = 0;
         OperandType type;
 
         Operand(std::unique_ptr<Field> value) : directValue(std::move(value)), type(DIRECT) {}
@@ -1444,7 +1445,7 @@ class RedBlackTree {
         }
 
     public:
-        const int MAX_NODES = 3;
+        const int MAX_NODES = 5;
         int numNodes;
         RedBlackTree() {
             NIL = new Node(0, 0);
@@ -1455,12 +1456,15 @@ class RedBlackTree {
         }
 
         void insert(int key, std::unique_ptr<Tuple> tuple) {
+            std::cout << "Inserting key: " << key << std::endl;
             Node* newNode = new Node(key, std::move(tuple));
             newNode->left = NIL;
             newNode->right = NIL;
-        
+            std::cout << "New node created with key: " << newNode->key << std::endl;
             bstInsert(newNode);
+            std::cout << "BST Insert completed for key: " << newNode->key << std::endl;
             fixTree(newNode);
+            std::cout << "Fixing tree completed for key: " << newNode->key << std::endl;
             numNodes++;
         }
 
@@ -1475,16 +1479,292 @@ class RedBlackTree {
             root = NIL;
             numNodes = 0;
         }
+
+        // Method to search for a key in the Red-Black Tree
+        Node* search(int key) const {
+            Node* current = root;
+
+            while (current != nullptr) {
+                // Found the key
+                if (key == current->key) {
+                    return current;
+                }
+                // Go left if key is smaller
+                else if (key < current->key) {
+                    current = current->left;
+                }
+                // Go right if key is larger
+                else {
+                    current = current->right;
+                }
+            }
+
+            // Key not found
+            return nullptr;
+        }
 };
+
+
+class SSTFile {
+    private:
+        std::string filename;
+        std::vector<std::unique_ptr<Tuple>> tuples;
+        int fileId;
+    
+    public:
+        SSTFile(int id) : fileId(id) {
+            filename = "sst_" + std::to_string(id) + ".dat";
+        }
+    
+        SSTFile(const std::string& fname) : filename(fname) {
+            // Extract fileId from filename (assuming format "sst_X.dat")
+            size_t start = filename.find('_') + 1;
+            size_t end = filename.find('.');
+            fileId = std::stoi(filename.substr(start, end - start));
+        }
+    
+        void addTuple(std::unique_ptr<Tuple> tuple) {
+            tuples.push_back(std::move(tuple));
+        }
+    
+        void writeToDisk() {
+            std::ofstream outFile(filename, std::ios::binary);
+            if (!outFile) {
+                std::cerr << "Failed to open SST file for writing: " << filename << std::endl;
+                return;
+            }
+    
+            // Write number of tuples
+            size_t numTuples = tuples.size();
+            outFile.write(reinterpret_cast<const char*>(&numTuples), sizeof(numTuples));
+    
+            // Write each tuple
+            for (const auto& tuple : tuples) {
+                // For simplicity, assuming each tuple has exactly 2 integer fields
+                int key = tuple->fields[0]->asInt();
+                int value = tuple->fields[1]->asInt();
+                
+                outFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+                outFile.write(reinterpret_cast<const char*>(&value), sizeof(value));
+            }
+    
+            outFile.close();
+            std::cout << "Written " << numTuples << " tuples to SST file: " << filename << std::endl;
+        }
+    
+        std::string getFilename() const {
+            return filename;
+        }
+    
+        int getFileId() const {
+            return fileId;
+        }
+    
+        // Load tuples from disk file
+        bool loadFromDisk() {
+            tuples.clear();
+            
+            std::ifstream inFile(filename, std::ios::binary);
+            if (!inFile) {
+                std::cerr << "Failed to open SST file for reading: " << filename << std::endl;
+                return false;
+            }
+    
+            // Read number of tuples
+            size_t numTuples;
+            inFile.read(reinterpret_cast<char*>(&numTuples), sizeof(numTuples));
+    
+            // Read each tuple
+            for (size_t i = 0; i < numTuples; i++) {
+                int key, value;
+                inFile.read(reinterpret_cast<char*>(&key), sizeof(key));
+                inFile.read(reinterpret_cast<char*>(&value), sizeof(value));
+    
+                auto newTuple = std::make_unique<Tuple>();
+                newTuple->addField(std::make_unique<Field>(key));
+                newTuple->addField(std::make_unique<Field>(value));
+                
+                tuples.push_back(std::move(newTuple));
+            }
+    
+            inFile.close();
+            std::cout << "Loaded " << numTuples << " tuples from SST file: " << filename << std::endl;
+            return true;
+        }
+    
+        std::vector<std::unique_ptr<Tuple>>& getTuples() {
+            return tuples;
+        }
+};
+
+
+class SSTManager {
+    private:
+        int nextFileId;
+        std::vector<std::string> sstFiles;
+    
+    public:
+        SSTManager() : nextFileId(0) {
+            // Check if there are existing SST files from previous runs
+            loadExistingSSTs();
+        }
+    
+        // Load any existing SST files from the disk
+        void loadExistingSSTs() {
+            // This would be more robust with filesystem API, but simple pattern matching works for demo
+            for (int i = 0; i < 1000; i++) {  // Arbitrary upper limit
+                std::string filename = "sst_" + std::to_string(i) + ".dat";
+                std::ifstream testFile(filename);
+                if (testFile) {
+                    sstFiles.push_back(filename);
+                    if (i >= nextFileId) {
+                        nextFileId = i + 1;
+                    }
+                    testFile.close();
+                    std::cout << "Found existing SST file: " << filename << std::endl;
+                }
+            }
+            std::cout << "Found " << sstFiles.size() << " existing SST files, nextFileId = " << nextFileId << std::endl;
+        }
+    
+        int createNewSST(std::vector<std::unique_ptr<Tuple>>& tuples) {
+            SSTFile sstFile(nextFileId);
+            
+            // Add tuples to SST file
+            for (auto& tuple : tuples) {
+                sstFile.addTuple(std::move(tuple));
+            }
+            
+            // Write SST to disk
+            sstFile.writeToDisk();
+            
+            // Add to list of SST files
+            sstFiles.push_back(sstFile.getFilename());
+            
+            int currentFileId = nextFileId++;
+            
+            // Check if compaction is needed
+            if (sstFiles.size() >= 2) {
+                compactSSTs();
+            }
+            
+            return currentFileId;
+        }
+    
+        void compactSSTs() {
+            if (sstFiles.size() < 2) return;
+            
+            std::cout << "Starting compaction of SST files..." << std::endl;
+            
+            // Select the two oldest files based on their filenames
+            std::sort(sstFiles.begin(), sstFiles.end());
+            std::string file1Name = sstFiles[0];
+            std::string file2Name = sstFiles[1];
+            
+            SSTFile file1(file1Name);
+            SSTFile file2(file2Name);
+            
+            if (!file1.loadFromDisk() || !file2.loadFromDisk()) {
+                std::cerr << "Failed to load SST files for compaction" << std::endl;
+                return;
+            }
+            
+            // Merge tuples, handling duplicates by keeping latest value
+            std::map<int, std::unique_ptr<Tuple>> mergedTuples;
+            
+            // Process tuples from first file
+            for (auto& tuple : file1.getTuples()) {
+                int key = tuple->fields[0]->asInt();
+                mergedTuples[key] = std::move(tuple);
+            }
+            
+            // Process tuples from second file, overwriting duplicates
+            for (auto& tuple : file2.getTuples()) {
+                int key = tuple->fields[0]->asInt();
+                mergedTuples[key] = std::move(tuple);
+            }
+            
+            // Create new compacted SST file
+            SSTFile compactedFile(nextFileId);
+            
+            // Add merged tuples to compacted file
+            for (auto& pair : mergedTuples) {
+                compactedFile.addTuple(std::move(pair.second));
+            }
+            
+            // Write compacted file to disk
+            compactedFile.writeToDisk();
+            
+            // Remove old SST files from disk
+            std::remove(file1Name.c_str());
+            std::remove(file2Name.c_str());
+            
+            // Update SST files list
+            sstFiles.erase(sstFiles.begin(), sstFiles.begin() + 2);
+            sstFiles.push_back(compactedFile.getFilename());
+            
+            nextFileId++;
+            
+            std::cout << "Compaction completed. Created new SST file: " << compactedFile.getFilename() << std::endl;
+        }
+        
+        // Method to read all data from SST files
+        std::vector<std::unique_ptr<Tuple>> readAllData() {
+            std::map<int, std::unique_ptr<Tuple>> allData;
+            
+            // Read from all SST files, with newer files overriding older ones
+            std::sort(sstFiles.begin(), sstFiles.end()); // Sort by filename to get chronological order
+            
+            for (const auto& filename : sstFiles) {
+                SSTFile sstFile(filename);
+                if (sstFile.loadFromDisk()) {
+                    for (auto& tuple : sstFile.getTuples()) {
+                        int key = tuple->fields[0]->asInt();
+                        allData[key] = std::move(tuple);
+                    }
+                }
+            }
+            
+            // Convert map to vector
+            std::vector<std::unique_ptr<Tuple>> result;
+            for (auto& pair : allData) {
+                result.push_back(std::move(pair.second));
+            }
+            
+            return result;
+        }
+        
+        // Method to lookup a specific key
+        std::unique_ptr<Tuple> lookup(int key) {
+            // Start from newest SST files (higher fileId)
+            std::vector<std::string> sortedFiles = sstFiles;
+            std::sort(sortedFiles.begin(), sortedFiles.end(), std::greater<std::string>());
+            
+            for (const auto& filename : sortedFiles) {
+                SSTFile sstFile(filename);
+                if (sstFile.loadFromDisk()) {
+                    for (auto& tuple : sstFile.getTuples()) {
+                        if (tuple->fields[0]->asInt() == key) {
+                            return tuple->clone();
+                        }
+                    }
+                }
+            }
+            
+            return nullptr; // Key not found
+        }
+};
+
 
 class InsertOperator : public Operator {
 private:
     BufferManager& bufferManager;
     std::unique_ptr<Tuple> tupleToInsert;
     RedBlackTree& redBlackTree;
+    SSTManager& sstManager;
 
 public:
-    InsertOperator(BufferManager& manager, RedBlackTree& redBlackTree) : bufferManager(manager), redBlackTree(redBlackTree){}
+    InsertOperator(BufferManager& manager, RedBlackTree& redBlackTree, SSTManager& sstManager) : bufferManager(manager), redBlackTree(redBlackTree), sstManager(sstManager){}
 
     // Set the tuple to be inserted by this operator.
     void setTupleToInsert(std::unique_ptr<Tuple> tuple) {
@@ -1499,17 +1779,25 @@ public:
         if (!tupleToInsert) return false; // No tuple to insert
         int pageId = bufferManager.getCurrentPageId();
         std::cout<<"Current page id in slot manager: "<<pageId<<std::endl;
-        redBlackTree.insert(tupleToInsert->fields[0]->asInt(), std::move(tupleToInsert));
+        int key = tupleToInsert->fields[0]->asInt();
+        redBlackTree.insert(key, std::move(tupleToInsert));
+        std::cout << "RBT Insert Done" << std::endl;
         if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
             std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
-            auto& page = bufferManager.getPage(pageId);
-            for(int i = 0; i < redBlackTree.MAX_NODES;i++){
-                page->addTuple(inorder[i]->clone());
-            }
-            bufferManager.flushPage(pageId);
-            bufferManager.extend();
+            // auto& page = bufferManager.getPage(pageId);
+            // for(int i = 0; i < redBlackTree.MAX_NODES;i++){
+            //     page->addTuple(inorder[i]->clone());
+            // }
+            // bufferManager.flushPage(pageId);
+            // bufferManager.extend();
+            // redBlackTree.clearTree();
+            // bufferManager.readPage(pageId);
+
+            // Write tuples to a new SST file
+            sstManager.createNewSST(inorder);
+            
+            // Clear the RBT for new insertions
             redBlackTree.clearTree();
-            bufferManager.readPage(pageId);
         }
         return true;
         // If insertion failed in all existing pages, extend the database and try again
@@ -1573,6 +1861,7 @@ public:
     HashIndex hash_index;
     BufferManager buffer_manager;
     RedBlackTree redBlackTree;
+    SSTManager sstManager;
 
 public:
     size_t max_number_of_tuples = 5000;
@@ -1598,7 +1887,7 @@ public:
         newTuple->addField(std::move(key_field));
         newTuple->addField(std::move(value_field));
 
-        InsertOperator insertOp(buffer_manager, redBlackTree);
+        InsertOperator insertOp(buffer_manager, redBlackTree, sstManager);
         insertOp.setTupleToInsert(std::move(newTuple));
         bool status = insertOp.next();
 
@@ -1615,6 +1904,28 @@ public:
 
     }
 
+    // Function to read a value by key
+    std::unique_ptr<Tuple> get(int key) {
+        // First check in the RBT for recent inserts
+        Node* node = redBlackTree.search(key);
+        if (node != nullptr && node->tuple != nullptr) {
+            // Found in RBT, return a clone of the tuple
+            return node->tuple->clone();
+        }
+        
+        // Then check in SST files
+        return sstManager.lookup(key);
+    }
+    
+    // Function to flush any remaining data in RBT to disk
+    void flushMemoryTable() {
+        if (redBlackTree.numNodes > 0) {
+            std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
+            sstManager.createNewSST(inorder);
+            redBlackTree.clearTree();
+        }
+    }
+
     void executeQueries() {
 
         std::vector<std::string> test_queries = {
@@ -1627,6 +1938,21 @@ public:
             executeQuery(components, buffer_manager);
         }
 
+    }
+
+    // Function to print all data in the database
+    void printAllData() {
+        // First flush any remaining data in RBT
+        flushMemoryTable();
+        
+        // Get all data from SST files
+        auto allData = sstManager.readAllData();
+        
+        std::cout << "Database contains " << allData.size() << " entries:" << std::endl;
+        for (const auto& tuple : allData) {
+            std::cout << "Key: " << tuple->fields[0]->asInt() 
+                    << ", Value: " << tuple->fields[1]->asInt() << std::endl;
+        }
     }
     
 };
@@ -1647,6 +1973,13 @@ int main() {
         std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
         db.insert(field1, field2);
     }
+
+    // Make sure all data is flushed to disk
+    db.flushMemoryTable();
+    
+    // Print all data in the database
+    std::cout << "\nPrinting all data in the database:" << std::endl;
+    db.printAllData();
 
     auto start = std::chrono::high_resolution_clock::now();
 
