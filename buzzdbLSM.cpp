@@ -1601,9 +1601,9 @@ class SSTFile {
 class SSTManager {
     private:
         int nextFileId;
-        std::vector<std::string> sstFiles;
     
     public:
+        std::vector<std::string> sstFiles;
         SSTManager() : nextFileId(0) {
             // Check if there are existing SST files from previous runs
             loadExistingSSTs();
@@ -1924,6 +1924,23 @@ public:
             sstManager.createNewSST(inorder);
             redBlackTree.clearTree();
         }
+        std::vector<std::unique_ptr<Tuple>> allTuples = sstManager.readAllData();
+        std::cout << "SST Manager File Size: " << sstManager.sstFiles.size() << std::endl;
+        if(sstManager.sstFiles.size() != 0){
+            std::cout << "SST Manager First File Name: " << sstManager.sstFiles[0] << std::endl;
+            std::remove(sstManager.sstFiles[0].c_str());
+            sstManager.sstFiles.erase(sstManager.sstFiles.begin());
+    
+        
+            int pageId = buffer_manager.getCurrentPageId();
+            auto& page = buffer_manager.getPage(pageId);
+            for(int i = 0; i < (int)allTuples.size();i++){
+                page->addTuple(allTuples[i]->clone());
+            }
+            buffer_manager.flushPage(pageId);
+            buffer_manager.extend();
+            buffer_manager.readPage(pageId);
+        }
     }
 
     void executeQueries() {
@@ -1943,7 +1960,7 @@ public:
     // Function to print all data in the database
     void printAllData() {
         // First flush any remaining data in RBT
-        flushMemoryTable();
+        // flushMemoryTable();
         
         // Get all data from SST files
         auto allData = sstManager.readAllData();
@@ -1978,8 +1995,8 @@ int main() {
     db.flushMemoryTable();
     
     // Print all data in the database
-    std::cout << "\nPrinting all data in the database:" << std::endl;
-    db.printAllData();
+    // std::cout << "\nPrinting all data in the database:" << std::endl;
+    // db.printAllData();
 
     auto start = std::chrono::high_resolution_clock::now();
 
