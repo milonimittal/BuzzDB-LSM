@@ -1,5 +1,0 @@
-1. Condition on line 237, prevents asserting tuples that are not of the form AB CD.
-    -ves, single numbers and greater than 3-digit numbers are not allowed.
-    Does removing the assert solve the problem or does it lead to future, cascading issues.
-
-2. SSTable sorted acc to int values due to RBT sort according to int instead of string.
