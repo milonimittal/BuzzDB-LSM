@@ -2354,45 +2354,45 @@ public:
     
 };
 
-// int main() {
+int SimulateNormalExecution() {
 
-//     BuzzDB db;
+    BuzzDB db;
 
-//     std::ifstream inputFile("output.txt");
+    std::ifstream inputFile("output.txt");
 
-//     if (!inputFile) {
-//         std::cerr << "Unable to open file" << std::endl;
-//         return 1;
-//     }
+    if (!inputFile) {
+        std::cerr << "Unable to open file" << std::endl;
+        return 1;
+    }
 
-//     int field1, field2;
-//     while (inputFile >> field1 >> field2) {
-//         std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
-//         db.insert(field1, field2);
-//     }
+    int field1, field2;
+    while (inputFile >> field1 >> field2) {
+        std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
+        db.insert(field1, field2);
+    }
 
-//     // Make sure all data is flushed to disk
-//     db.flushMemoryTable();
+    // Make sure all data is flushed to disk
+    db.flushMemoryTable();
     
-//     // Print all data in the database
-//     // std::cout << "\nPrinting all data in the database:" << std::endl;
-//     // db.printAllData();
+    // Print all data in the database
+    // std::cout << "\nPrinting all data in the database:" << std::endl;
+    // db.printAllData();
 
-//     auto start = std::chrono::high_resolution_clock::now();
+    auto start = std::chrono::high_resolution_clock::now();
 
-//     db.executeQueries();
+    db.executeQueries();
 
-//     auto end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::high_resolution_clock::now();
 
-//     // Calculate and print the elapsed time
-//     std::chrono::duration<double> elapsed = end - start;
-//     std::cout << "Elapsed time: " << 
-//     std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
-//           << " microseconds" << std::endl;
+    // Calculate and print the elapsed time
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Elapsed time: " << 
+    std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
+          << " microseconds" << std::endl;
 
 
-//     return 0;
-// }
+    return 0;
+}
 
 
 int main() {
@@ -2406,15 +2406,20 @@ int main() {
         std::cout << "Simulating database crash scenario..." << std::endl;
         
         // Add some data without proper shutdown
-        db.insert(100, 1000);
-        db.insert(101, 1001);
-        db.insert(102, 1002);
+        db.insert(13, 14);
+        db.insert(11, 18);
+        db.insert(12, 19);
         
         std::cout << "Database 'crashed' before flushing to disk" << std::endl;
         db.walLog.printWALLog();
 
         db.redBlackTree.clearTree(); // Clear the in-memory RBT to simulate a crash
-        db.walLog.recover(); // Attempt to recover from the WAL
+        std::vector<std::pair<int, int>> recoveredData = db.walLog.recover(); // Attempt to recover from the WAL
+        db.walLog.truncate(); // Truncate the WAL after recovery to clean up the log
+        for (const auto& [key, value] : recoveredData) {
+            db.insert(key, value);
+        }
+        db.recoveryPerformed = true; // Mark recovery as performed
         // Exit without proper shutdown
         // return 1;
     }
