@@ -2406,15 +2406,20 @@ int main() {
         std::cout << "Simulating database crash scenario..." << std::endl;
         
         // Add some data without proper shutdown
-        db.insert(100, 1000);
-        db.insert(101, 1001);
-        db.insert(102, 1002);
+        db.insert(13, 14);
+        db.insert(11, 18);
+        db.insert(12, 19);
         
         std::cout << "Database 'crashed' before flushing to disk" << std::endl;
         db.walLog.printWALLog();
 
         db.redBlackTree.clearTree(); // Clear the in-memory RBT to simulate a crash
-        db.walLog.recover(); // Attempt to recover from the WAL
+        std::vector<std::pair<int, int>> recoveredData = db.walLog.recover(); // Attempt to recover from the WAL
+        db.walLog.truncate(); // Truncate the WAL after recovery to clean up the log
+        for (const auto& [key, value] : recoveredData) {
+            db.insert(key, value);
+        }
+        db.recoveryPerformed = true; // Mark recovery as performed
         // Exit without proper shutdown
         // return 1;
     }
