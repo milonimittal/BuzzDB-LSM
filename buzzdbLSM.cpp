@@ -2,12 +2,12 @@
 #include <map>
 #include <vector>
 #include <fstream>
-#include <iostream>
+#include <iomanip>
 #include <chrono>
 #include <cassert>
 #include <list>
 #include <unordered_map>
-#include <iostream>
+#include <set>
 #include <map>
 #include <string>
 #include <memory>
@@ -1756,6 +1756,286 @@ class SSTManager {
 };
 
 
+// WAL Log class implementation
+class WALLog {
+    private:
+        std::string logFileName;
+        std::ofstream logFile;
+        
+        // Log entry types
+        enum LogEntryType {
+            INSERT = 1,
+            DELETE = 2,
+            COMMIT = 3,
+            CHECKPOINT = 4
+        };
+        
+    public:
+        WALLog(const std::string& fileName = "buzzdb_wal.log") : logFileName(fileName) {
+            // Open log file in append mode
+            logFile.open(logFileName, std::ios::binary | std::ios::app);
+            if (!logFile) {
+                std::cerr << "Failed to open WAL log file: " << logFileName << std::endl;
+                throw std::runtime_error("Failed to open WAL log file");
+            }
+            
+            // Write a checkpoint entry on startup
+            writeCheckpoint();
+        }
+        
+        ~WALLog() {
+            if (logFile.is_open()) {
+                logFile.close();
+            }
+        }
+        
+        // Log an insert operation
+        void logInsert(int key, int value) {
+            if (!logFile.is_open()) return;
+            
+            // Log entry format: [Type(1B)][Key(4B)][Value(4B)]
+            uint8_t type = LogEntryType::INSERT;
+            logFile.write(reinterpret_cast<const char*>(&type), sizeof(type));
+            logFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+            logFile.write(reinterpret_cast<const char*>(&value), sizeof(value));
+            logFile.flush();
+        }
+        
+        // Log a delete operation
+        void logDelete(int key) {
+            if (!logFile.is_open()) return;
+            
+            // Log entry format: [Type(1B)][Key(4B)]
+            uint8_t type = LogEntryType::DELETE;
+            logFile.write(reinterpret_cast<const char*>(&type), sizeof(type));
+            logFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+            logFile.flush();
+        }
+        
+        // Log a commit
+        void logCommit() {
+            if (!logFile.is_open()) return;
+            
+            // Log entry format: [Type(1B)]
+            uint8_t type = LogEntryType::COMMIT;
+            logFile.write(reinterpret_cast<const char*>(&type), sizeof(type));
+            logFile.flush();
+        }
+        
+        // Write a checkpoint entry
+        void writeCheckpoint() {
+            if (!logFile.is_open()) return;
+            
+            // Log entry format: [Type(1B)]
+            uint8_t type = LogEntryType::CHECKPOINT;
+            logFile.write(reinterpret_cast<const char*>(&type), sizeof(type));
+            logFile.flush();
+            
+            std::cout << "WAL checkpoint written" << std::endl;
+        }
+        
+        // Truncate log after successful checkpoint
+        void truncate() {
+            if (logFile.is_open()) {
+                logFile.close();
+            }
+            
+            // Reopen file in write mode (clears the file)
+            logFile.open(logFileName, std::ios::binary | std::ios::trunc);
+            if (!logFile) {
+                std::cerr << "Failed to truncate WAL log file: " << logFileName << std::endl;
+                // Try to reopen in append mode at least
+                logFile.open(logFileName, std::ios::binary | std::ios::app);
+            }
+            
+            // Write a new checkpoint entry
+            writeCheckpoint();
+        }
+        
+        // Recovery function to replay log after crash
+        std::vector<std::pair<int, int>> recover() {
+            // Close the file if it's open
+            if (logFile.is_open()) {
+                logFile.close();
+            }
+            
+            // Map to store recovered key-value pairs
+            std::map<int, int> recoveredData;
+            // Set to store keys that were deleted
+            std::set<int> deletedKeys;
+            
+            // Open for reading
+            std::ifstream reader(logFileName, std::ios::binary);
+            if (!reader) {
+                std::cerr << "Failed to open WAL log file for recovery: " << logFileName << std::endl;
+                // Re-open the log file for writing
+                logFile.open(logFileName, std::ios::binary | std::ios::app);
+                return {};
+            }
+            
+            std::cout << "Starting WAL recovery process..." << std::endl;
+            
+            bool foundCheckpoint = false;
+            size_t checkpointPos = 0;
+            
+            // First pass: find the last checkpoint position
+            while (!reader.eof()) {
+                uint8_t type;
+                reader.read(reinterpret_cast<char*>(&type), sizeof(type));
+                
+                if (reader.eof() || !reader.good()) break;
+                
+                if (type == LogEntryType::CHECKPOINT) {
+                    foundCheckpoint = true;
+                    checkpointPos = reader.tellg();
+                    checkpointPos -= sizeof(type); // Adjust to the start of the entry
+                } else if (type == LogEntryType::INSERT) {
+                    // Skip INSERT entry data
+                    reader.seekg(sizeof(int) * 2, std::ios::cur);
+                } else if (type == LogEntryType::DELETE) {
+                    // Skip DELETE entry data
+                    reader.seekg(sizeof(int), std::ios::cur);
+                }
+                // COMMIT doesn't have extra data
+            }
+            
+            // If we found a checkpoint, start from there
+            if (foundCheckpoint) {
+                reader.clear(); // Clear any EOF flags
+                reader.seekg(checkpointPos, std::ios::beg);
+                std::cout << "Found checkpoint at position " << checkpointPos << std::endl;
+            } else {
+                // No checkpoint found, start from beginning
+                reader.clear();
+                reader.seekg(0, std::ios::beg);
+                std::cout << "No checkpoint found, replaying entire log" << std::endl;
+            }
+            
+            // Second pass: replay log entries
+            int replayedEntries = 0;
+            while (!reader.eof()) {
+                uint8_t type;
+                reader.read(reinterpret_cast<char*>(&type), sizeof(type));
+                
+                if (reader.eof() || !reader.good()) break;
+                
+                if (type == LogEntryType::INSERT) {
+                    int key, value;
+                    reader.read(reinterpret_cast<char*>(&key), sizeof(key));
+                    reader.read(reinterpret_cast<char*>(&value), sizeof(value));
+                    
+                    if (reader.good()) {
+                        recoveredData[key] = value;
+                        deletedKeys.erase(key); // Remove from deleted if it was there
+                        replayedEntries++;
+                    }
+                } else if (type == LogEntryType::DELETE) {
+                    int key;
+                    reader.read(reinterpret_cast<char*>(&key), sizeof(key));
+                    
+                    if (reader.good()) {
+                        recoveredData.erase(key);
+                        deletedKeys.insert(key);
+                        replayedEntries++;
+                    }
+                } else if (type == LogEntryType::CHECKPOINT) {
+                    // For checkpoint entries, we continue - we already handled the positioning above
+                }
+                // COMMIT doesn't change our recovery data
+            }
+            
+            reader.close();
+            
+            // Re-open the log file for writing
+            logFile.open(logFileName, std::ios::binary | std::ios::app);
+            
+            std::cout << "WAL recovery completed. Replayed " << replayedEntries << " entries." << std::endl;
+            
+            // Convert map to vector of pairs
+            std::vector<std::pair<int, int>> result;
+            for (const auto& pair : recoveredData) {
+                if (deletedKeys.find(pair.first) == deletedKeys.end()) {
+                    result.push_back(pair);
+                }
+            }
+            
+            return result;
+        }
+
+        // Print the contents of a WAL log file
+        void printWALLog(const std::string& fileName = "buzzdb_wal.log") {
+            std::ifstream logFile(fileName, std::ios::binary);
+
+            if (!logFile) {
+                std::cerr << "Failed to open WAL log file: " << fileName << std::endl;
+                return;
+            }
+
+            std::cout << "=== WAL Log File: " << fileName << " ===" << std::endl;
+            std::cout << "Position | Type       | Data" << std::endl;
+            std::cout << "---------+------------+------------------" << std::endl;
+
+            size_t position = 0;
+            size_t entryCount = 0;
+
+            while (!logFile.eof()) {
+                // Record the current position
+                position = logFile.tellg();
+
+                // Read the entry type
+                uint8_t type;
+                logFile.read(reinterpret_cast<char*>(&type), sizeof(type));
+
+                if (logFile.eof() || !logFile.good()) break;
+
+                // Print position and entry type
+                std::cout << std::setw(8) << position << " | ";
+
+                // Process based on entry type
+                switch (type) {
+                    case LogEntryType::INSERT: {
+                        int key, value;
+                        logFile.read(reinterpret_cast<char*>(&key), sizeof(key));
+                        logFile.read(reinterpret_cast<char*>(&value), sizeof(value));
+
+                        if (logFile.good()) {
+                            std::cout << "INSERT      | Key: " << key << ", Value: " << value << std::endl;
+                        }
+                        break;
+                    }
+                    case LogEntryType::DELETE: {
+                        int key;
+                        logFile.read(reinterpret_cast<char*>(&key), sizeof(key));
+
+                        if (logFile.good()) {
+                            std::cout << "DELETE      | Key: " << key << std::endl;
+                        }
+                        break;
+                    }
+                    case LogEntryType::COMMIT:
+                        std::cout << "COMMIT      |" << std::endl;
+                        break;
+                    case LogEntryType::CHECKPOINT:
+                        std::cout << "CHECKPOINT  |" << std::endl;
+                        break;
+                    default:
+                        std::cout << "UNKNOWN(" << static_cast<int>(type) << ") |" << std::endl;
+                        // For unknown types, we can't reliably continue parsing
+                        logFile.seekg(0, std::ios::end);
+                        break;
+                }
+
+                entryCount++;
+            }
+
+            logFile.close();
+
+            std::cout << "---------+------------+------------------" << std::endl;
+            std::cout << "Total entries: " << entryCount << std::endl;
+        }
+};
+
+
 class InsertOperator : public Operator {
 private:
     BufferManager& bufferManager;
@@ -1862,13 +2142,54 @@ public:
     BufferManager buffer_manager;
     RedBlackTree redBlackTree;
     SSTManager sstManager;
+    WALLog walLog;
 
 public:
     size_t max_number_of_tuples = 5000;
     size_t tuple_insertion_attempt_counter = 0;
+    bool recoveryPerformed = false;
 
     BuzzDB(){
         // Storage Manager automatically created
+        // Perform recovery if needed
+        recoverFromWAL();
+    }
+
+    // Method to recover data from WAL during startup
+    void recoverFromWAL() {
+        std::cout << "Checking for WAL recovery..." << std::endl;
+        auto recoveredData = walLog.recover();
+        
+        if (!recoveredData.empty()) {
+            std::cout << "Found " << recoveredData.size() << " records to recover" << std::endl;
+            
+            // Insert recovered data
+            for (const auto& pair : recoveredData) {
+                int key = pair.first;
+                int value = pair.second;
+                
+                // Create a new tuple with the recovered key and value
+                auto newTuple = std::make_unique<Tuple>();
+                newTuple->addField(std::make_unique<Field>(key));
+                newTuple->addField(std::make_unique<Field>(value));
+                
+                // Insert directly into RBT
+                redBlackTree.insert(key, std::move(newTuple));
+                
+                // Check if RBT is full and needs to be flushed
+                if (redBlackTree.numNodes == redBlackTree.MAX_NODES) {
+                    std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
+                    sstManager.createNewSST(inorder);
+                    redBlackTree.clearTree();
+                }
+            }
+            
+            // Write a checkpoint after recovery
+            walLog.writeCheckpoint();
+            recoveryPerformed = true;
+        } else {
+            std::cout << "No WAL recovery needed" << std::endl;
+        }
     }
 
     // insert function
@@ -1901,7 +2222,41 @@ public:
         //     }
         // }
 
+        // Log a commit after the operation
+        walLog.logInsert(key, value);
 
+    }
+
+    // Function to delete a record by key
+    bool remove(int key) {
+        // First check if the key exists in the RBT
+        Node* node = redBlackTree.search(key);
+        if (node != nullptr && node->tuple != nullptr) {
+            // Log the delete operation
+            walLog.logDelete(key);
+            
+            // Currently no direct deletion from RBT, so we need to handle this differently
+            // We could mark the tuple as deleted or implement RBT deletion
+            // For now, we'll handle deletion as a logical operation via WAL
+            
+            walLog.logCommit();
+            return true;
+        }
+        
+        // Check in SST files
+        auto tuple = sstManager.lookup(key);
+        if (tuple != nullptr) {
+            // Log the delete operation
+            walLog.logDelete(key);
+            
+            // Currently no direct deletion from SST, handled during compaction
+            // This is a logical delete via WAL
+            
+            walLog.logCommit();
+            return true;
+        }
+        
+        return false; // Key not found
     }
 
     // Function to read a value by key
@@ -1923,6 +2278,9 @@ public:
             std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
             sstManager.createNewSST(inorder);
             redBlackTree.clearTree();
+
+            // Write checkpoint after flushing memtable
+            // walLog.writeCheckpoint();
         }
         std::vector<std::unique_ptr<Tuple>> allTuples = sstManager.readAllData();
         std::cout << "SST Manager File Size: " << sstManager.sstFiles.size() << std::endl;
@@ -1940,6 +2298,9 @@ public:
             buffer_manager.flushPage(pageId);
             buffer_manager.extend();
             buffer_manager.readPage(pageId);
+
+            // After major operations like this, truncate the WAL
+            // walLog.truncate();
         }
     }
 
@@ -1971,13 +2332,94 @@ public:
                     << ", Value: " << tuple->fields[1]->asInt() << std::endl;
         }
     }
+
+    // Function to checkpoint the database state
+    void checkpoint() {
+        // First flush any in-memory data
+        flushMemoryTable();
+        
+        // Force compaction of SST files
+        if (sstManager.sstFiles.size() >= 2) {
+            sstManager.compactSSTs();
+        }
+        
+        // Write a checkpoint in the WAL
+        walLog.writeCheckpoint();
+        
+        // Truncate the WAL log since we've persisted everything
+        walLog.truncate();
+        
+        std::cout << "Database checkpoint completed" << std::endl;
+    }
     
 };
 
-int main() {
+// int main() {
 
+//     BuzzDB db;
+
+//     std::ifstream inputFile("output.txt");
+
+//     if (!inputFile) {
+//         std::cerr << "Unable to open file" << std::endl;
+//         return 1;
+//     }
+
+//     int field1, field2;
+//     while (inputFile >> field1 >> field2) {
+//         std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
+//         db.insert(field1, field2);
+//     }
+
+//     // Make sure all data is flushed to disk
+//     db.flushMemoryTable();
+    
+//     // Print all data in the database
+//     // std::cout << "\nPrinting all data in the database:" << std::endl;
+//     // db.printAllData();
+
+//     auto start = std::chrono::high_resolution_clock::now();
+
+//     db.executeQueries();
+
+//     auto end = std::chrono::high_resolution_clock::now();
+
+//     // Calculate and print the elapsed time
+//     std::chrono::duration<double> elapsed = end - start;
+//     std::cout << "Elapsed time: " << 
+//     std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
+//           << " microseconds" << std::endl;
+
+
+//     return 0;
+// }
+
+
+int main() {
+    // Create the database instance (will perform recovery if needed)
     BuzzDB db;
 
+    // Check if we need to simulate a crash recovery
+    bool simulateCrash = true;  // Set to true to test recovery
+    
+    if (simulateCrash) {
+        std::cout << "Simulating database crash scenario..." << std::endl;
+        
+        // Add some data without proper shutdown
+        db.insert(100, 1000);
+        db.insert(101, 1001);
+        db.insert(102, 1002);
+        
+        std::cout << "Database 'crashed' before flushing to disk" << std::endl;
+        db.walLog.printWALLog();
+
+        db.redBlackTree.clearTree(); // Clear the in-memory RBT to simulate a crash
+        db.walLog.recover(); // Attempt to recover from the WAL
+        // Exit without proper shutdown
+        // return 1;
+    }
+    
+    // Normal execution path
     std::ifstream inputFile("output.txt");
 
     if (!inputFile) {
@@ -1987,29 +2429,34 @@ int main() {
 
     int field1, field2;
     while (inputFile >> field1 >> field2) {
-        std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
+        std::cout << "Inserting: " << field1 << ", " << field2 << std::endl;
         db.insert(field1, field2);
+        
+        // Periodically create checkpoints
+        if (db.tuple_insertion_attempt_counter % 100 == 0) {
+            std::cout << "Periodic WAL Print:" << std::endl;
+            db.walLog.printWALLog();
+            db.checkpoint();
+        }
     }
 
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
     
-    // Print all data in the database
-    // std::cout << "\nPrinting all data in the database:" << std::endl;
-    // db.printAllData();
-
+    // Execute queries
     auto start = std::chrono::high_resolution_clock::now();
-
     db.executeQueries();
-
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate and print the elapsed time
     std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Elapsed time: " << 
-    std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
-          << " microseconds" << std::endl;
+    std::cout << "Elapsed time: " 
+              << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
+              << " microseconds" << std::endl;
 
+    // Create final checkpoint before clean shutdown
+    // db.checkpoint();
+    db.walLog.printWALLog(); // Print the WAL log
 
     return 0;
 }
