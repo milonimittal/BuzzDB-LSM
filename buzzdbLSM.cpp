@@ -1445,7 +1445,7 @@ class RedBlackTree {
         }
 
     public:
-        const int MAX_NODES = 5;
+        const int MAX_NODES = 1000;
         int numNodes;
         RedBlackTree() {
             NIL = new Node(0, 0);
@@ -2070,14 +2070,16 @@ public:
             // }
             // bufferManager.flushPage(pageId);
             // bufferManager.extend();
-            // redBlackTree.clearTree();
+            redBlackTree.clearTree();
             // bufferManager.readPage(pageId);
 
             // Write tuples to a new SST file
-            sstManager.createNewSST(inorder);
+            sstManager.createNewSST(inorder); // Without concurrency
+            // std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
+            // writeRBTtoSST.join();
             
             // Clear the RBT for new insertions
-            redBlackTree.clearTree();
+            // redBlackTree.clearTree();
         }
         return true;
         // If insertion failed in all existing pages, extend the database and try again
@@ -2354,11 +2356,11 @@ public:
     
 };
 
-int SimulateNormalExecution() {
-
+int main() {
+    auto start = std::chrono::high_resolution_clock::now();
     BuzzDB db;
 
-    std::ifstream inputFile("output.txt");
+    std::ifstream inputFile("output500.txt");
 
     if (!inputFile) {
         std::cerr << "Unable to open file" << std::endl;
@@ -2378,9 +2380,9 @@ int SimulateNormalExecution() {
     // std::cout << "\nPrinting all data in the database:" << std::endl;
     // db.printAllData();
 
-    auto start = std::chrono::high_resolution_clock::now();
+    
 
-    db.executeQueries();
+    // db.executeQueries();
 
     auto end = std::chrono::high_resolution_clock::now();
 
@@ -2395,7 +2397,7 @@ int SimulateNormalExecution() {
 }
 
 
-int main() {
+int SimulateCrashRecovery() {
     // Create the database instance (will perform recovery if needed)
     BuzzDB db;
 
@@ -2425,7 +2427,7 @@ int main() {
     }
     
     // Normal execution path
-    std::ifstream inputFile("output.txt");
+    std::ifstream inputFile("output500.txt");
 
     if (!inputFile) {
         std::cerr << "Unable to open file" << std::endl;
