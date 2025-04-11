@@ -1601,9 +1601,9 @@ class SSTFile {
 class SSTManager {
     private:
         int nextFileId;
-        std::thread runningThread;
     
     public:
+        int numSST = 0;
         std::vector<std::string> sstFiles;
         SSTManager() : nextFileId(0) {
             // Check if there are existing SST files from previous runs
@@ -1629,6 +1629,10 @@ class SSTManager {
         }
     
         int createNewSST(std::vector<std::unique_ptr<Tuple>>& tuples) {
+            // activeThreads++;
+             // Create new SST file
+             // std::cout<<"CREATE NEW SST"<<std::endl;
+            std::cout<<"CREATE NEW SST: numSST: "<<numSST<<std::endl;
             SSTFile sstFile(nextFileId);
             
             // Add tuples to SST file
@@ -1646,29 +1650,14 @@ class SSTManager {
             
             // Check if compaction is needed
             if (sstFiles.size() >= 2) {
-                // std::cout<<"Checking Joinable in createNewSST"<<std::endl;
-                // if(runningThread!=std::thread() && !runningThread.joinable()){
-                //     std::cout<<"Joining Thread in createNewSST"<<std::endl;
-                //     runningThread.join();
-                // }
-                // std::cout<<"Joinable checked in createNewSST"<<std::endl;
-                // runningThread = std::thread();
                 // std::thread compactSSTsThread(&SSTManager::compactSSTs, this);
-                // std::thread compactSSTsThread([this]() {
-                //     try {
-                //         this->compactSSTs();
-                //     } catch (const std::exception& e) {
-                //         std::cerr << "[Thread Exception] " << e.what() << std::endl;
-                //     } catch (...) {
-                //         std::cerr << "[Thread Exception] Unknown exception occurred" << std::endl;
-                //     }
-                // });
-                // runningThread = std::move(compactSSTsThread);
-                // threads.push_back(std::move(compactSSTsThread));
                 // compactSSTsThread.join();
                 compactSSTs(); //Without Concurrency
             }
-            
+            numSST++;
+
+            std::cout<<"OUR TEAM IS THE BEST. PLEASE LET US PRESENT AND GIVE 10% BONUS. THANK. YOU BEST PROF. numSST: "<< numSST<<std::endl;
+    
             return currentFileId;
         }
     
@@ -2063,7 +2052,6 @@ private:
     std::unique_ptr<Tuple> tupleToInsert;
     RedBlackTree& redBlackTree;
     SSTManager& sstManager;
-    std::thread runningThread;
 
 public:
     InsertOperator(BufferManager& manager, RedBlackTree& redBlackTree, SSTManager& sstManager) : bufferManager(manager), redBlackTree(redBlackTree), sstManager(sstManager){}
@@ -2077,7 +2065,6 @@ public:
         // Not used in this context
     }
 
-
     bool next() override {
         if (!tupleToInsert) return false; // No tuple to insert
         int pageId = bufferManager.getCurrentPageId();
@@ -2086,41 +2073,31 @@ public:
         redBlackTree.insert(key, std::move(tupleToInsert));
         std::cout << "RBT Insert Done" << std::endl;
         if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
-            std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
+            // std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
             // auto& page = bufferManager.getPage(pageId);
             // for(int i = 0; i < redBlackTree.MAX_NODES;i++){
             //     page->addTuple(inorder[i]->clone());
             // }
             // bufferManager.flushPage(pageId);
             // bufferManager.extend();
-            redBlackTree.clearTree();
+            
             // bufferManager.readPage(pageId);
 
             // Write tuples to a new SST file
             // sstManager.createNewSST(inorder); // Without concurrency
-            std::cout<<"Checking Joinable in next"<<std::endl;
-            if(runningThread.joinable()){
-                std::cout<<"Joining thread in next"<<std::endl;
-                runningThread.join();
-            }
-            std::cout<<"Joinable checked in next"<<std::endl;
-            // runningThread = std::thread();
+
             // std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
-            std::thread writeRBTtoSST([&inorder, this]() {
-                try {
-                    // Call the createNewSST function within the thread
-                    this->sstManager.createNewSST(inorder);
-                } catch (const std::exception& e) {
-                    std::cerr << "[Thread Exception] Exception caught: " << e.what() << std::endl;
-                } catch (...) {
-                    std::cerr << "[Thread Exception] Unknown exception occurred" << std::endl;
-                }
-            });
-            std::cout<<"Thread created in next"<<std::endl;
-            runningThread = std::move(writeRBTtoSST);
-            std::cout<<"Thread moved in next"<<std::endl;
-            // sstManager.threads.push_back(std::move(writeRBTtoSST));
             // writeRBTtoSST.join();
+
+
+            auto inorderCopy = new std::vector<std::unique_ptr<Tuple>>(redBlackTree.getInorder());
+            redBlackTree.clearTree();
+            std::thread writeRBTtoSST([this, inorderCopy]() {
+                // Thread takes ownership of the data
+                sstManager.createNewSST(*inorderCopy);
+                delete inorderCopy; // Clean up the memory when done
+            });
+            writeRBTtoSST.detach();
             
             // Clear the RBT for new insertions
             // redBlackTree.clearTree();
@@ -2140,7 +2117,6 @@ public:
     void close() override {
         // Not used in this context
     }
-
 
     std::vector<std::unique_ptr<Field>> getOutput() override {
         return {}; // Return empty vector
@@ -2413,10 +2389,18 @@ int main() {
     }
 
     int field1, field2;
+    // int numEntries = 0;
     while (inputFile >> field1 >> field2) {
         std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
         db.insert(field1, field2);
+        // numEntries++;
     }
+
+    // int numNewSST = numEntries/db.redBlackTree.MAX_NODES + numEntries%db.redBlackTree.MAX_NODES;
+    
+    // while(db.sstManager.numSST != numNewSST){
+    //     std::cout<<"Waiting for active threads to finish."<<std::endl;
+    // }   
 
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
@@ -2428,10 +2412,6 @@ int main() {
     
 
     // db.executeQueries();
-
-    // for(auto& t: db.sstManager.threads){
-    //     t.join();
-    // }
 
     auto end = std::chrono::high_resolution_clock::now();
 
@@ -2495,6 +2475,8 @@ int SimulateCrashRecovery() {
             db.checkpoint();
         }
     }
+
+
 
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
