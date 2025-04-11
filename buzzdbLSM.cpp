@@ -1645,7 +1645,9 @@ class SSTManager {
             
             // Check if compaction is needed
             if (sstFiles.size() >= 2) {
-                compactSSTs();
+                std::thread compactSSTsThread(&SSTManager::compactSSTs, this);
+                compactSSTsThread.join();
+                // compactSSTs(); //Without Concurrency
             }
             
             return currentFileId;
@@ -2074,9 +2076,9 @@ public:
             // bufferManager.readPage(pageId);
 
             // Write tuples to a new SST file
-            sstManager.createNewSST(inorder); // Without concurrency
-            // std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
-            // writeRBTtoSST.join();
+            // sstManager.createNewSST(inorder); // Without concurrency
+            std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
+            writeRBTtoSST.join();
             
             // Clear the RBT for new insertions
             // redBlackTree.clearTree();
@@ -2360,7 +2362,7 @@ int main() {
     auto start = std::chrono::high_resolution_clock::now();
     BuzzDB db;
 
-    std::ifstream inputFile("output500.txt");
+    std::ifstream inputFile("output.txt");
 
     if (!inputFile) {
         std::cerr << "Unable to open file" << std::endl;
@@ -2427,7 +2429,7 @@ int SimulateCrashRecovery() {
     }
     
     // Normal execution path
-    std::ifstream inputFile("output500.txt");
+    std::ifstream inputFile("output.txt");
 
     if (!inputFile) {
         std::cerr << "Unable to open file" << std::endl;
