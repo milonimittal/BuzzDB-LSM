@@ -1445,7 +1445,7 @@ class RedBlackTree {
         }
 
     public:
-        const int MAX_NODES = 5;
+        const int MAX_NODES = 1000;
         int numNodes;
         RedBlackTree() {
             NIL = new Node(0, 0);
@@ -1601,6 +1601,7 @@ class SSTFile {
 class SSTManager {
     private:
         int nextFileId;
+        std::thread runningThread;
     
     public:
         std::vector<std::string> sstFiles;
@@ -1645,7 +1646,27 @@ class SSTManager {
             
             // Check if compaction is needed
             if (sstFiles.size() >= 2) {
-                compactSSTs();
+                // std::cout<<"Checking Joinable in createNewSST"<<std::endl;
+                // if(runningThread!=std::thread() && !runningThread.joinable()){
+                //     std::cout<<"Joining Thread in createNewSST"<<std::endl;
+                //     runningThread.join();
+                // }
+                // std::cout<<"Joinable checked in createNewSST"<<std::endl;
+                // runningThread = std::thread();
+                // std::thread compactSSTsThread(&SSTManager::compactSSTs, this);
+                // std::thread compactSSTsThread([this]() {
+                //     try {
+                //         this->compactSSTs();
+                //     } catch (const std::exception& e) {
+                //         std::cerr << "[Thread Exception] " << e.what() << std::endl;
+                //     } catch (...) {
+                //         std::cerr << "[Thread Exception] Unknown exception occurred" << std::endl;
+                //     }
+                // });
+                // runningThread = std::move(compactSSTsThread);
+                // threads.push_back(std::move(compactSSTsThread));
+                // compactSSTsThread.join();
+                compactSSTs(); //Without Concurrency
             }
             
             return currentFileId;
@@ -2042,6 +2063,7 @@ private:
     std::unique_ptr<Tuple> tupleToInsert;
     RedBlackTree& redBlackTree;
     SSTManager& sstManager;
+    std::thread runningThread;
 
 public:
     InsertOperator(BufferManager& manager, RedBlackTree& redBlackTree, SSTManager& sstManager) : bufferManager(manager), redBlackTree(redBlackTree), sstManager(sstManager){}
@@ -2054,6 +2076,7 @@ public:
     void open() override {
         // Not used in this context
     }
+
 
     bool next() override {
         if (!tupleToInsert) return false; // No tuple to insert
@@ -2070,14 +2093,37 @@ public:
             // }
             // bufferManager.flushPage(pageId);
             // bufferManager.extend();
-            // redBlackTree.clearTree();
+            redBlackTree.clearTree();
             // bufferManager.readPage(pageId);
 
             // Write tuples to a new SST file
-            sstManager.createNewSST(inorder);
+            // sstManager.createNewSST(inorder); // Without concurrency
+            std::cout<<"Checking Joinable in next"<<std::endl;
+            if(runningThread.joinable()){
+                std::cout<<"Joining thread in next"<<std::endl;
+                runningThread.join();
+            }
+            std::cout<<"Joinable checked in next"<<std::endl;
+            // runningThread = std::thread();
+            // std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
+            std::thread writeRBTtoSST([&inorder, this]() {
+                try {
+                    // Call the createNewSST function within the thread
+                    this->sstManager.createNewSST(inorder);
+                } catch (const std::exception& e) {
+                    std::cerr << "[Thread Exception] Exception caught: " << e.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "[Thread Exception] Unknown exception occurred" << std::endl;
+                }
+            });
+            std::cout<<"Thread created in next"<<std::endl;
+            runningThread = std::move(writeRBTtoSST);
+            std::cout<<"Thread moved in next"<<std::endl;
+            // sstManager.threads.push_back(std::move(writeRBTtoSST));
+            // writeRBTtoSST.join();
             
             // Clear the RBT for new insertions
-            redBlackTree.clearTree();
+            // redBlackTree.clearTree();
         }
         return true;
         // If insertion failed in all existing pages, extend the database and try again
@@ -2094,6 +2140,7 @@ public:
     void close() override {
         // Not used in this context
     }
+
 
     std::vector<std::unique_ptr<Field>> getOutput() override {
         return {}; // Return empty vector
@@ -2354,8 +2401,8 @@ public:
     
 };
 
-int SimulateNormalExecution() {
-
+int main() {
+    auto start = std::chrono::high_resolution_clock::now();
     BuzzDB db;
 
     std::ifstream inputFile("output.txt");
@@ -2378,9 +2425,13 @@ int SimulateNormalExecution() {
     // std::cout << "\nPrinting all data in the database:" << std::endl;
     // db.printAllData();
 
-    auto start = std::chrono::high_resolution_clock::now();
+    
 
-    db.executeQueries();
+    // db.executeQueries();
+
+    // for(auto& t: db.sstManager.threads){
+    //     t.join();
+    // }
 
     auto end = std::chrono::high_resolution_clock::now();
 
@@ -2395,7 +2446,7 @@ int SimulateNormalExecution() {
 }
 
 
-int main() {
+int SimulateCrashRecovery() {
     // Create the database instance (will perform recovery if needed)
     BuzzDB db;
 
