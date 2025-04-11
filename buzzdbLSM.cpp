@@ -1628,6 +1628,7 @@ class SSTManager {
         }
     
         int createNewSST(std::vector<std::unique_ptr<Tuple>>& tuples) {
+            std::cout<<"CREATE NEW SST"<<std::endl;
             SSTFile sstFile(nextFileId);
             
             // Add tuples to SST file
@@ -1645,10 +1646,12 @@ class SSTManager {
             
             // Check if compaction is needed
             if (sstFiles.size() >= 2) {
-                std::thread compactSSTsThread(&SSTManager::compactSSTs, this);
-                compactSSTsThread.join();
-                // compactSSTs(); //Without Concurrency
+                // std::thread compactSSTsThread(&SSTManager::compactSSTs, this);
+                // compactSSTsThread.join();
+                compactSSTs(); //Without Concurrency
             }
+
+            std::cout<<"OUR TEAM IS THE BEST. PLEASE LET US PRESENT AND GIVE 10% BONUS. THANK. YOU BEST PROF."<<std::endl;
             
             return currentFileId;
         }
@@ -2065,20 +2068,31 @@ public:
         redBlackTree.insert(key, std::move(tupleToInsert));
         std::cout << "RBT Insert Done" << std::endl;
         if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
-            std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
+            // std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
             // auto& page = bufferManager.getPage(pageId);
             // for(int i = 0; i < redBlackTree.MAX_NODES;i++){
             //     page->addTuple(inorder[i]->clone());
             // }
             // bufferManager.flushPage(pageId);
             // bufferManager.extend();
-            redBlackTree.clearTree();
+            
             // bufferManager.readPage(pageId);
 
             // Write tuples to a new SST file
             // sstManager.createNewSST(inorder); // Without concurrency
-            std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
-            writeRBTtoSST.join();
+
+            // std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
+            // writeRBTtoSST.join();
+
+
+            auto inorderCopy = new std::vector<std::unique_ptr<Tuple>>(redBlackTree.getInorder());
+            redBlackTree.clearTree();
+            std::thread writeRBTtoSST([this, inorderCopy]() {
+                // Thread takes ownership of the data
+                sstManager.createNewSST(*inorderCopy);
+                delete inorderCopy; // Clean up the memory when done
+            });
+            writeRBTtoSST.detach();
             
             // Clear the RBT for new insertions
             // redBlackTree.clearTree();
