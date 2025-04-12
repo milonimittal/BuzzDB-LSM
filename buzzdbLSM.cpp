@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
+#include <cstdlib>
 #include <cassert>
 #include <list>
 #include <unordered_map>
@@ -1445,7 +1446,7 @@ class RedBlackTree {
         }
 
     public:
-        const int MAX_NODES = 1000;
+        int MAX_NODES = 1000;
         int numNodes;
         RedBlackTree() {
             NIL = new Node(0, 0);
@@ -2338,9 +2339,9 @@ public:
     
 };
 
-int main() {
-    auto start = std::chrono::high_resolution_clock::now();
+int SimulateNormalExecution(int RBTSize) {
     BuzzDB db;
+    db.redBlackTree.MAX_NODES = RBTSize;
 
     std::ifstream inputFile("output.txt");
 
@@ -2359,31 +2360,14 @@ int main() {
 
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
-    
-    // Print all data in the database
-    // std::cout << "\nPrinting all data in the database:" << std::endl;
-    // db.printAllData();
-
-    
-
-    // db.executeQueries();
-
-    auto end = std::chrono::high_resolution_clock::now();
-
-    // Calculate and print the elapsed time
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Elapsed time: " << 
-    std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
-          << " microseconds" << std::endl;
-
-
     return 0;
 }
 
 
-int SimulateCrashRecovery() {
+int SimulateCrashRecovery(int RBTSize) {
     // Create the database instance (will perform recovery if needed)
     BuzzDB db;
+    db.redBlackTree.MAX_NODES = RBTSize;
 
     // Check if we need to simulate a crash recovery
     bool simulateCrash = true;  // Set to true to test recovery
@@ -2435,21 +2419,48 @@ int SimulateCrashRecovery() {
 
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
-    
-    // Execute queries
+
+    db.walLog.printWALLog(); // Print the WAL log
+
+    return 0;
+}
+
+void DeleteFileIfExists(const char* filename) {
+    if (std::remove(filename) == 0) {
+        std::cout << "Deleted: " << filename << "\n";
+    } else {
+        std::perror(("Failed to delete " + std::string(filename)).c_str());
+    }
+}
+
+
+int main(int argc, char** argv){
+
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <numTuples> <RBTNodes>\n";
+        return 1;
+    }
+
+    int numTuples = std::stoi(argv[1]);
+    int RBTNodes = std::stoi(argv[2]);
+    std::cout << "Number of Tuples: " << numTuples << ", RBT Nodes: " << RBTNodes << std::endl;
+
     auto start = std::chrono::high_resolution_clock::now();
-    db.executeQueries();
+    SimulateNormalExecution(RBTNodes);
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate and print the elapsed time
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Elapsed time: " 
-              << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
-              << " microseconds" << std::endl;
+    double time_normal = std::chrono::duration<double, std::micro>(end - start).count();
 
-    // Create final checkpoint before clean shutdown
-    // db.checkpoint();
-    db.walLog.printWALLog(); // Print the WAL log
+    std::ofstream outfile("performance.txt", std::ios::app); // 'app' to append to file
+    if (!outfile) {
+        std::cerr << "Failed to open performance.txt for writing.\n";
+        return 1;
+    }
+
+    outfile << numTuples << ", "
+            << RBTNodes << ", "
+            << time_normal << "\n";
 
     return 0;
 }
