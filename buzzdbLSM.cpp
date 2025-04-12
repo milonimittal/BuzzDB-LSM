@@ -1601,9 +1601,9 @@ class SSTFile {
 class SSTManager {
     private:
         int nextFileId;
-    
+        
     public:
-        int numSST = 0;
+        std::vector<std::thread> activeThreads;
         std::vector<std::string> sstFiles;
         SSTManager() : nextFileId(0) {
             // Check if there are existing SST files from previous runs
@@ -1629,35 +1629,16 @@ class SSTManager {
         }
     
         int createNewSST(std::vector<std::unique_ptr<Tuple>>& tuples) {
-            // activeThreads++;
-             // Create new SST file
-             // std::cout<<"CREATE NEW SST"<<std::endl;
-            std::cout<<"CREATE NEW SST: numSST: "<<numSST<<std::endl;
             SSTFile sstFile(nextFileId);
-            
-            // Add tuples to SST file
             for (auto& tuple : tuples) {
                 sstFile.addTuple(std::move(tuple));
             }
-            
-            // Write SST to disk
             sstFile.writeToDisk();
-            
-            // Add to list of SST files
             sstFiles.push_back(sstFile.getFilename());
-            
             int currentFileId = nextFileId++;
-            
-            // Check if compaction is needed
             if (sstFiles.size() >= 2) {
-                // std::thread compactSSTsThread(&SSTManager::compactSSTs, this);
-                // compactSSTsThread.join();
                 compactSSTs(); //Without Concurrency
-            }
-            numSST++;
-
-            std::cout<<"OUR TEAM IS THE BEST. PLEASE LET US PRESENT AND GIVE 10% BONUS. THANK. YOU BEST PROF. numSST: "<< numSST<<std::endl;
-    
+            }    
             return currentFileId;
         }
     
@@ -2073,45 +2054,19 @@ public:
         redBlackTree.insert(key, std::move(tupleToInsert));
         std::cout << "RBT Insert Done" << std::endl;
         if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
-            // std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
-            // auto& page = bufferManager.getPage(pageId);
-            // for(int i = 0; i < redBlackTree.MAX_NODES;i++){
-            //     page->addTuple(inorder[i]->clone());
-            // }
-            // bufferManager.flushPage(pageId);
-            // bufferManager.extend();
-            
-            // bufferManager.readPage(pageId);
-
-            // Write tuples to a new SST file
-            // sstManager.createNewSST(inorder); // Without concurrency
-
-            // std::thread writeRBTtoSST (&SSTManager::createNewSST, &sstManager, std::ref(inorder));
-            // writeRBTtoSST.join();
-
-
             auto inorderCopy = new std::vector<std::unique_ptr<Tuple>>(redBlackTree.getInorder());
             redBlackTree.clearTree();
             std::thread writeRBTtoSST([this, inorderCopy]() {
-                // Thread takes ownership of the data
-                sstManager.createNewSST(*inorderCopy);
-                delete inorderCopy; // Clean up the memory when done
+                try {
+                    sstManager.createNewSST(*inorderCopy);
+                } catch (const std::exception& e) {
+                    std::cerr << "Thread exception: " << e.what() << std::endl;
+                }
+                delete inorderCopy;
             });
-            writeRBTtoSST.detach();
-            
-            // Clear the RBT for new insertions
-            // redBlackTree.clearTree();
+            sstManager.activeThreads.push_back(std::move(writeRBTtoSST));
         }
         return true;
-        // If insertion failed in all existing pages, extend the database and try again
-        // bufferManager.extend();
-        // auto& newPage = bufferManager.getPage(bufferManager.getNumPages() - 1);
-        // if (newPage->addTuple(tupleToInsert->clone())) {
-        //     bufferManager.flushPage(bufferManager.getNumPages() - 1);
-        //     return true; // Insertion successful after extending the database
-        // }
-
-        // return false; // Insertion failed even after extending the database
     }
 
     void close() override {
@@ -2297,6 +2252,12 @@ public:
     
     // Function to flush any remaining data in RBT to disk
     void flushMemoryTable() {
+        for (auto& thread : sstManager.activeThreads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        sstManager.activeThreads.clear();
         if (redBlackTree.numNodes > 0) {
             std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
             sstManager.createNewSST(inorder);
@@ -2395,12 +2356,6 @@ int main() {
         db.insert(field1, field2);
         // numEntries++;
     }
-
-    // int numNewSST = numEntries/db.redBlackTree.MAX_NODES + numEntries%db.redBlackTree.MAX_NODES;
-    
-    // while(db.sstManager.numSST != numNewSST){
-    //     std::cout<<"Waiting for active threads to finish."<<std::endl;
-    // }   
 
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
