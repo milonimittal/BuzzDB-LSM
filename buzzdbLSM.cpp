@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
+#include <cstdlib>
 #include <cassert>
 #include <list>
 #include <unordered_map>
@@ -1445,7 +1446,7 @@ class RedBlackTree {
         }
 
     public:
-        const int MAX_NODES = 5;
+        int MAX_NODES = 1000;
         int numNodes;
         RedBlackTree() {
             NIL = new Node(0, 0);
@@ -1601,8 +1602,9 @@ class SSTFile {
 class SSTManager {
     private:
         int nextFileId;
-    
+        
     public:
+        std::vector<std::thread> activeThreads;
         std::vector<std::string> sstFiles;
         SSTManager() : nextFileId(0) {
             // Check if there are existing SST files from previous runs
@@ -1629,25 +1631,15 @@ class SSTManager {
     
         int createNewSST(std::vector<std::unique_ptr<Tuple>>& tuples) {
             SSTFile sstFile(nextFileId);
-            
-            // Add tuples to SST file
             for (auto& tuple : tuples) {
                 sstFile.addTuple(std::move(tuple));
             }
-            
-            // Write SST to disk
             sstFile.writeToDisk();
-            
-            // Add to list of SST files
             sstFiles.push_back(sstFile.getFilename());
-            
             int currentFileId = nextFileId++;
-            
-            // Check if compaction is needed
             if (sstFiles.size() >= 2) {
-                compactSSTs();
-            }
-            
+                compactSSTs(); //Without Concurrency
+            }    
             return currentFileId;
         }
     
@@ -2063,32 +2055,19 @@ public:
         redBlackTree.insert(key, std::move(tupleToInsert));
         std::cout << "RBT Insert Done" << std::endl;
         if(redBlackTree.numNodes == redBlackTree.MAX_NODES){
-            std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
-            // auto& page = bufferManager.getPage(pageId);
-            // for(int i = 0; i < redBlackTree.MAX_NODES;i++){
-            //     page->addTuple(inorder[i]->clone());
-            // }
-            // bufferManager.flushPage(pageId);
-            // bufferManager.extend();
-            // redBlackTree.clearTree();
-            // bufferManager.readPage(pageId);
-
-            // Write tuples to a new SST file
-            sstManager.createNewSST(inorder);
-            
-            // Clear the RBT for new insertions
+            auto inorderCopy = new std::vector<std::unique_ptr<Tuple>>(redBlackTree.getInorder());
             redBlackTree.clearTree();
+            std::thread writeRBTtoSST([this, inorderCopy]() {
+                try {
+                    sstManager.createNewSST(*inorderCopy);
+                } catch (const std::exception& e) {
+                    std::cerr << "Thread exception: " << e.what() << std::endl;
+                }
+                delete inorderCopy;
+            });
+            sstManager.activeThreads.push_back(std::move(writeRBTtoSST));
         }
         return true;
-        // If insertion failed in all existing pages, extend the database and try again
-        // bufferManager.extend();
-        // auto& newPage = bufferManager.getPage(bufferManager.getNumPages() - 1);
-        // if (newPage->addTuple(tupleToInsert->clone())) {
-        //     bufferManager.flushPage(bufferManager.getNumPages() - 1);
-        //     return true; // Insertion successful after extending the database
-        // }
-
-        // return false; // Insertion failed even after extending the database
     }
 
     void close() override {
@@ -2274,6 +2253,12 @@ public:
     
     // Function to flush any remaining data in RBT to disk
     void flushMemoryTable() {
+        for (auto& thread : sstManager.activeThreads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        sstManager.activeThreads.clear();
         if (redBlackTree.numNodes > 0) {
             std::vector<std::unique_ptr<Tuple>> inorder = redBlackTree.getInorder();
             sstManager.createNewSST(inorder);
@@ -2354,9 +2339,9 @@ public:
     
 };
 
-int SimulateNormalExecution() {
-
+int SimulateNormalExecution(int RBTSize) {
     BuzzDB db;
+    db.redBlackTree.MAX_NODES = RBTSize;
 
     std::ifstream inputFile("output.txt");
 
@@ -2366,38 +2351,23 @@ int SimulateNormalExecution() {
     }
 
     int field1, field2;
+    // int numEntries = 0;
     while (inputFile >> field1 >> field2) {
         std::cout<<"Inserting: "<<field1<<", "<<field2<<std::endl;
         db.insert(field1, field2);
+        // numEntries++;
     }
 
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
-    
-    // Print all data in the database
-    // std::cout << "\nPrinting all data in the database:" << std::endl;
-    // db.printAllData();
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    db.executeQueries();
-
-    auto end = std::chrono::high_resolution_clock::now();
-
-    // Calculate and print the elapsed time
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Elapsed time: " << 
-    std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
-          << " microseconds" << std::endl;
-
-
     return 0;
 }
 
 
-int main() {
+int SimulateCrashRecovery(int RBTSize) {
     // Create the database instance (will perform recovery if needed)
     BuzzDB db;
+    db.redBlackTree.MAX_NODES = RBTSize;
 
     // Check if we need to simulate a crash recovery
     bool simulateCrash = true;  // Set to true to test recovery
@@ -2445,23 +2415,52 @@ int main() {
         }
     }
 
+
+
     // Make sure all data is flushed to disk
     db.flushMemoryTable();
-    
-    // Execute queries
+
+    db.walLog.printWALLog(); // Print the WAL log
+
+    return 0;
+}
+
+void DeleteFileIfExists(const char* filename) {
+    if (std::remove(filename) == 0) {
+        std::cout << "Deleted: " << filename << "\n";
+    } else {
+        std::perror(("Failed to delete " + std::string(filename)).c_str());
+    }
+}
+
+
+int main(int argc, char** argv){
+
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <numTuples> <RBTNodes>\n";
+        return 1;
+    }
+
+    int numTuples = std::stoi(argv[1]);
+    int RBTNodes = std::stoi(argv[2]);
+    std::cout << "Number of Tuples: " << numTuples << ", RBT Nodes: " << RBTNodes << std::endl;
+
     auto start = std::chrono::high_resolution_clock::now();
-    db.executeQueries();
+    SimulateNormalExecution(RBTNodes);
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate and print the elapsed time
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Elapsed time: " 
-              << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
-              << " microseconds" << std::endl;
+    double time_normal = std::chrono::duration<double, std::micro>(end - start).count();
 
-    // Create final checkpoint before clean shutdown
-    // db.checkpoint();
-    db.walLog.printWALLog(); // Print the WAL log
+    std::ofstream outfile("performance.txt", std::ios::app); // 'app' to append to file
+    if (!outfile) {
+        std::cerr << "Failed to open performance.txt for writing.\n";
+        return 1;
+    }
+
+    outfile << numTuples << ", "
+            << RBTNodes << ", "
+            << time_normal << "\n";
 
     return 0;
 }
